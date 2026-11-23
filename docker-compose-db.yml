@@ -2,7 +2,7 @@ version: '3.9'
 services:
   # Postgres DB
   postgres-db:
-    container_name: moduply-postgres
+    container_name: gachi-postgres
     image: postgres:15
     ports:
       - '5432:5432'
@@ -14,14 +14,14 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER_NAME:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-0000}
-      POSTGRES_DB: ${POSTGRES_DB:-moduply}
+      POSTGRES_DB: ${POSTGRES_DB:-gachi}
       POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=ko-KR"
     env_file:
       - .env
 
   redis:
     image: redis:7.2-alpine
-    container_name: moduply-redis
+    container_name: gachi-redis
     ports:
       - "6379:6379"
     volumes:
@@ -34,7 +34,7 @@ services:
   broker:
     image: confluentinc/cp-kafka:7.5.3
     hostname: broker
-    container_name: broker
+    container_name: gachi-broker
     networks:
       - backend
     ports:
@@ -59,7 +59,7 @@ services:
   # Kafka GUI 모니터링 툴 (Kafdrop)
   kafdrop:
     image: obsidiandynamics/kafdrop:4.0.0
-    container_name: kafdrop
+    container_name: gachi-kafdrop
     ports:
       - "9000:9000" # http://localhost:9000 으로 브라우저 접속
     environment:

@@ -1,0 +1,291 @@
+package com.gachi.directmessage;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+
+import com.gachi.conversation.entity.Conversation;
+import com.gachi.conversation.entity.ConversationUserState;
+import com.gachi.conversation.exception.ConversationErrorCode;
+import com.gachi.conversation.exception.ConversationException;
+import com.gachi.conversation.repository.ConversationRepository;
+import com.gachi.conversation.repository.ConversationUserStateRepository;
+import com.gachi.directmessage.dto.DirectMessageCreateRequest;
+import com.gachi.directmessage.dto.DirectMessageDto;
+import com.gachi.directmessage.entity.DirectMessage;
+import com.gachi.directmessage.mapper.DirectMessageMapper;
+import com.gachi.directmessage.repository.DirectMessageRepository;
+import com.gachi.directmessage.service.DirectMessageService;
+import com.gachi.notification.event.DirectMessageReceivedEvent;
+import com.gachi.user.dto.UserSummaryDto;
+import com.gachi.user.entity.User;
+import com.gachi.user.enums.Role;
+import com.gachi.user.exception.UserErrorCode;
+import com.gachi.user.exception.UserException;
+import com.gachi.user.mapper.UserMapper;
+import com.gachi.user.repository.UserRepository;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
+
+@ExtendWith(MockitoExtension.class)
+class DirectMessageServiceTest {
+
+  @InjectMocks
+  private DirectMessageService directMessageService;
+
+  @Mock
+  private ConversationRepository conversationRepository;
+
+  @Mock
+  private ConversationUserStateRepository conversationUserStateRepository;
+
+  @Mock
+  private DirectMessageRepository directMessageRepository;
+
+  @Mock
+  private UserRepository userRepository;
+
+  @Mock
+  private DirectMessageMapper directMessageMapper;
+
+  @Mock
+  private UserMapper userMapper;
+
+  @Mock
+  private ApplicationEventPublisher eventPublisher;
+
+  @Test
+  @DisplayName("대화방 참여자가 DM을 생성하면 메시지를 저장하고 DTO를 반환한다.")
+  void create_success_with_participant() {
+    UUID currentUserId = UUID.randomUUID();
+    UUID withUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    UUID directMessageId = UUID.randomUUID();
+    Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+    User currentUser = user(currentUserId, "current");
+    User withUser = user(withUserId, "with");
+    Conversation conversation = Conversation.create(currentUserId, withUserId);
+    ReflectionTestUtils.setField(conversation, "id", conversationId);
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+    DirectMessage savedDirectMessage = DirectMessage.create(conversation, currentUser, request.content());
+    ReflectionTestUtils.setField(savedDirectMessage, "id", directMessageId);
+    ReflectionTestUtils.setField(savedDirectMessage, "createdAt", createdAt);
+    UserSummaryDto currentUserSummary = new UserSummaryDto(currentUserId, "current", null);
+    UserSummaryDto withUserSummary = new UserSummaryDto(withUserId, "with", null);
+    DirectMessageDto expected = new DirectMessageDto(
+        directMessageId,
+        conversationId,
+        createdAt,
+        currentUserSummary,
+        withUserSummary,
+        "hello"
+    );
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.of(conversation));
+    given(userRepository.findById(currentUserId)).willReturn(Optional.of(currentUser));
+    given(userRepository.findById(withUserId)).willReturn(Optional.of(withUser));
+    given(userMapper.toSummaryDto(currentUser, null)).willReturn(currentUserSummary);
+    given(userMapper.toSummaryDto(withUser, null)).willReturn(withUserSummary);
+    given(directMessageRepository.save(any(DirectMessage.class)))
+        .willReturn(savedDirectMessage);
+    given(conversationUserStateRepository.increaseUnreadCount(conversationId, withUserId))
+        .willReturn(1);
+    given(directMessageMapper.toDto(
+        savedDirectMessage,
+        conversation,
+        currentUserId,
+        currentUserSummary,
+        withUserSummary
+    )).willReturn(expected);
+
+    DirectMessageDto result = directMessageService.create(conversationId, request, currentUserId);
+
+    assertThat(result).isEqualTo(expected);
+    ArgumentCaptor<DirectMessage> directMessageCaptor = ArgumentCaptor.forClass(
+        DirectMessage.class
+    );
+    verify(directMessageRepository).save(directMessageCaptor.capture());
+    DirectMessage capturedDirectMessage = directMessageCaptor.getValue();
+    assertThat(capturedDirectMessage.getContent()).isEqualTo(request.content());
+    assertThat(capturedDirectMessage.getConversation()).isEqualTo(conversation);
+    assertThat(capturedDirectMessage.getSender()).isEqualTo(currentUser);
+    verify(conversationRepository).updateLastMessageIfNewer(
+        conversationId,
+        directMessageId,
+        createdAt,
+        request.content(),
+        currentUserId
+    );
+    verify(conversationUserStateRepository).increaseUnreadCount(conversationId, withUserId);
+    verify(conversationUserStateRepository, never()).saveAndFlush(any());
+    ArgumentCaptor<DirectMessageReceivedEvent> eventCaptor = ArgumentCaptor.forClass(
+        DirectMessageReceivedEvent.class
+    );
+    verify(eventPublisher).publishEvent(eventCaptor.capture());
+    DirectMessageReceivedEvent event = eventCaptor.getValue();
+    assertThat(event.getReceiverId()).isEqualTo(withUserId);
+    assertThat(event.getSenderId()).isEqualTo(currentUserId);
+    assertThat(event.getSenderName()).isEqualTo(currentUser.getName());
+    assertThat(event.getConversationId()).isEqualTo(conversationId);
+  }
+
+  @Test
+  @DisplayName("DM 생성 시 수신자 대화방 상태가 없으면 상태를 생성한 뒤 안 읽음 개수를 증가시킨다.")
+  void create_success_creates_missing_receiver_state() {
+    UUID currentUserId = UUID.randomUUID();
+    UUID withUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    UUID directMessageId = UUID.randomUUID();
+    Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+    User currentUser = user(currentUserId, "current");
+    User withUser = user(withUserId, "with");
+    Conversation conversation = Conversation.create(currentUserId, withUserId);
+    ReflectionTestUtils.setField(conversation, "id", conversationId);
+    ConversationUserState state = ConversationUserState.create(conversation, withUserId);
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+    DirectMessage savedDirectMessage = DirectMessage.create(conversation, currentUser, request.content());
+    ReflectionTestUtils.setField(savedDirectMessage, "id", directMessageId);
+    ReflectionTestUtils.setField(savedDirectMessage, "createdAt", createdAt);
+    UserSummaryDto currentUserSummary = new UserSummaryDto(currentUserId, "current", null);
+    UserSummaryDto withUserSummary = new UserSummaryDto(withUserId, "with", null);
+    DirectMessageDto expected = new DirectMessageDto(
+        directMessageId,
+        conversationId,
+        createdAt,
+        currentUserSummary,
+        withUserSummary,
+        "hello"
+    );
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.of(conversation));
+    given(userRepository.findById(currentUserId)).willReturn(Optional.of(currentUser));
+    given(userRepository.findById(withUserId)).willReturn(Optional.of(withUser));
+    given(userMapper.toSummaryDto(currentUser, null)).willReturn(currentUserSummary);
+    given(userMapper.toSummaryDto(withUser, null)).willReturn(withUserSummary);
+    given(directMessageRepository.save(any(DirectMessage.class))).willReturn(savedDirectMessage);
+    given(conversationUserStateRepository.increaseUnreadCount(conversationId, withUserId))
+        .willReturn(0, 1);
+    given(conversationUserStateRepository.saveAndFlush(any(ConversationUserState.class)))
+        .willReturn(state);
+    given(directMessageMapper.toDto(
+        savedDirectMessage,
+        conversation,
+        currentUserId,
+        currentUserSummary,
+        withUserSummary
+    )).willReturn(expected);
+
+    DirectMessageDto result = directMessageService.create(conversationId, request, currentUserId);
+
+    assertThat(result).isEqualTo(expected);
+    verify(conversationUserStateRepository, times(2)).increaseUnreadCount(conversationId, withUserId);
+    verify(conversationUserStateRepository).saveAndFlush(any(ConversationUserState.class));
+  }
+
+  @Test
+  @DisplayName("대화방 참여자가 아닌 사용자가 DM을 생성하면 예외가 발생한다.")
+  void create_fail_when_not_participant() {
+    UUID user1Id = UUID.randomUUID();
+    UUID user2Id = UUID.randomUUID();
+    UUID currentUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    Conversation conversation = Conversation.create(user1Id, user2Id);
+    ReflectionTestUtils.setField(conversation, "id", conversationId);
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.of(conversation));
+
+    assertThatThrownBy(() -> directMessageService.create(conversationId, request, currentUserId))
+        .isInstanceOfSatisfying(ConversationException.class, exception -> {
+          assertThat(exception.getErrorCode()).isEqualTo(ConversationErrorCode.CONVERSATION_FORBIDDEN);
+          assertThat(exception.getDetails().get("conversationId")).isEqualTo(conversationId);
+          assertThat(exception.getDetails().get("userId")).isEqualTo(currentUserId);
+        });
+
+    verify(directMessageRepository, never()).save(any(DirectMessage.class));
+  }
+
+  @Test
+  @DisplayName("존재하지 않는 대화방에 DM을 생성하면 예외가 발생한다.")
+  void create_fail_when_conversation_not_found() {
+    UUID currentUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.empty());
+
+    assertThatThrownBy(() -> directMessageService.create(conversationId, request, currentUserId))
+        .isInstanceOfSatisfying(ConversationException.class, exception -> {
+          assertThat(exception.getErrorCode()).isEqualTo(ConversationErrorCode.CONVERSATION_NOT_FOUND);
+          assertThat(exception.getDetails().get("conversationId")).isEqualTo(conversationId);
+        });
+
+    verify(directMessageRepository, never()).save(any(DirectMessage.class));
+  }
+
+  @Test
+  @DisplayName("DM 생성 요청자가 존재하지 않으면 예외가 발생한다.")
+  void create_fail_when_current_user_not_found() {
+    UUID currentUserId = UUID.randomUUID();
+    UUID withUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    Conversation conversation = Conversation.create(currentUserId, withUserId);
+    ReflectionTestUtils.setField(conversation, "id", conversationId);
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.of(conversation));
+    given(userRepository.findById(currentUserId)).willReturn(Optional.empty());
+
+    assertThatThrownBy(() -> directMessageService.create(conversationId, request, currentUserId))
+        .isInstanceOfSatisfying(UserException.class, exception -> {
+          assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.USER_NOT_FOUND_EXCEPTION);
+          assertThat(exception.getDetails().get("userId")).isEqualTo(currentUserId);
+        });
+
+    verify(directMessageRepository, never()).save(any(DirectMessage.class));
+  }
+
+  @Test
+  @DisplayName("DM 수신자가 존재하지 않으면 예외가 발생한다.")
+  void create_fail_when_with_user_not_found() {
+    UUID currentUserId = UUID.randomUUID();
+    UUID withUserId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    User currentUser = user(currentUserId, "current");
+    Conversation conversation = Conversation.create(currentUserId, withUserId);
+    ReflectionTestUtils.setField(conversation, "id", conversationId);
+    DirectMessageCreateRequest request = new DirectMessageCreateRequest("hello");
+
+    given(conversationRepository.findById(conversationId)).willReturn(Optional.of(conversation));
+    given(userRepository.findById(currentUserId)).willReturn(Optional.of(currentUser));
+    given(userRepository.findById(withUserId)).willReturn(Optional.empty());
+
+    assertThatThrownBy(() -> directMessageService.create(conversationId, request, currentUserId))
+        .isInstanceOfSatisfying(UserException.class, exception -> {
+          assertThat(exception.getErrorCode()).isEqualTo(UserErrorCode.USER_NOT_FOUND_EXCEPTION);
+          assertThat(exception.getDetails().get("userId")).isEqualTo(withUserId);
+        });
+
+    verify(directMessageRepository, never()).save(any(DirectMessage.class));
+  }
+
+  private User user(UUID userId, String name) {
+    User user = new User(name + "@example.com", "password", name, Role.USER);
+    ReflectionTestUtils.setField(user, "id", userId);
+    return user;
+  }
+}

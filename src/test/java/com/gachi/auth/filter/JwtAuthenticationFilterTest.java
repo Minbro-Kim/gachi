@@ -1,0 +1,246 @@
+package com.gachi.auth.filter;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gachi.auth.service.AuthService;
+import com.gachi.auth.JwtTokenProvider;
+import com.gachi.auth.handler.exception.ModuPlyAuthenticationEntryPoint;
+import com.gachi.common.util.RedisUtil;
+import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+
+@ExtendWith(MockitoExtension.class)
+class JwtAuthenticationFilterTest {
+  @Mock
+  private JwtTokenProvider jwtTokenProvider;
+
+  @Mock
+  private AuthService authService;
+
+  @Mock
+  private RedisUtil redisUtil;
+
+  @AfterEach
+  void tearDown() {
+    SecurityContextHolder.clearContext();
+  }
+
+  @Test
+  @DisplayName("유효한 Access Token이면 SecurityContext에 인증 정보를 저장한다")
+  void do_filter_success_when_access_token_is_valid() throws Exception {
+    // Given
+    UUID userId = UUID.randomUUID();
+    String token = "valid-token";
+    String email = "tester@example.com";
+    String sessionId = UUID.randomUUID().toString();
+    Authentication authentication = new TestingAuthenticationToken("tester", null, "ROLE_USER");
+    ModuPlyAuthenticationEntryPoint entryPoint =
+        new ModuPlyAuthenticationEntryPoint(objectMapper());
+    JwtAuthenticationFilter filter =
+        new JwtAuthenticationFilter(jwtTokenProvider, authService, entryPoint, redisUtil);
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    MockFilterChain filterChain = new MockFilterChain();
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(jwtTokenProvider.getUserId(token)).willReturn(userId);
+    given(jwtTokenProvider.getEmail(token)).willReturn(email);
+    given(jwtTokenProvider.getTokenVersion(token)).willReturn(0L);
+    given(jwtTokenProvider.getSessionId(token)).willReturn(sessionId);
+    given(authService.isTokenVersionValid(email, 0L)).willReturn(true);
+    given(authService.isSessionActive(sessionId)).willReturn(true);
+    given(authService.getAuthentication(userId)).willReturn(authentication);
+
+    // When
+    filter.doFilter(request, response, filterChain);
+
+    // Then
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isEqualTo(authentication);
+    assertThat(response.getStatus()).isEqualTo(200);
+
+    verify(jwtTokenProvider).validateAccessToken(token);
+    verify(jwtTokenProvider).getUserId(token);
+    verify(authService).isTokenVersionValid(email, 0L);
+    verify(authService).isSessionActive(sessionId);
+    verify(authService).getAuthentication(userId);
+  }
+
+  @Test
+  @DisplayName("Access Token 버전이 현재 사용자 버전과 다르면 401을 반환한다")
+  void do_filter_fail_when_token_version_is_mismatched() throws Exception {
+    UUID userId = UUID.randomUUID();
+    String token = "old-token";
+    String email = "tester@example.com";
+    JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
+        jwtTokenProvider,
+        authService,
+        new ModuPlyAuthenticationEntryPoint(objectMapper()),
+        redisUtil
+    );
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(jwtTokenProvider.getUserId(token)).willReturn(userId);
+    given(jwtTokenProvider.getEmail(token)).willReturn(email);
+    given(jwtTokenProvider.getTokenVersion(token)).willReturn(0L);
+    given(jwtTokenProvider.getSessionId(token)).willReturn(UUID.randomUUID().toString());
+    given(authService.isTokenVersionValid(email, 0L)).willReturn(false);
+
+    filter.doFilter(request, response, new MockFilterChain());
+
+    assertThat(response.getStatus()).isEqualTo(401);
+    verify(authService).isTokenVersionValid(email, 0L);
+    verify(authService, never()).getAuthentication(any());
+  }
+
+  @Test
+  @DisplayName("SecurityContext에 인증 정보가 있어도 Redis 세션이 폐기되면 401을 반환한다")
+  void do_filter_fail_when_existing_security_context_session_is_revoked() throws Exception {
+    // Given
+    UUID userId = UUID.randomUUID();
+    String token = "revoked-session-token";
+    String email = "tester@example.com";
+    String sessionId = UUID.randomUUID().toString();
+    JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
+        jwtTokenProvider,
+        authService,
+        new ModuPlyAuthenticationEntryPoint(objectMapper()),
+        redisUtil
+    );
+    SecurityContextHolder.getContext()
+        .setAuthentication(new TestingAuthenticationToken("existing-user", null, "ROLE_USER"));
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(jwtTokenProvider.getUserId(token)).willReturn(userId);
+    given(jwtTokenProvider.getEmail(token)).willReturn(email);
+    given(jwtTokenProvider.getTokenVersion(token)).willReturn(0L);
+    given(jwtTokenProvider.getSessionId(token)).willReturn(sessionId);
+    given(authService.isTokenVersionValid(email, 0L)).willReturn(true);
+    given(authService.isSessionActive(sessionId)).willReturn(false);
+
+    // When
+    filter.doFilter(request, response, new MockFilterChain());
+
+    // Then
+    assertThat(response.getStatus()).isEqualTo(401);
+    assertThat(response.getContentAsString()).contains("auth16");
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    verify(authService).isSessionActive(sessionId);
+    verify(authService, never()).getAuthentication(any());
+  }
+
+  @Test
+  @DisplayName("Access Token이 없으면 인증 시도 없이 다음 필터로 넘긴다")
+  void do_filter_skip_when_access_token_is_missing() throws Exception {
+    // Given
+    ModuPlyAuthenticationEntryPoint entryPoint =
+        new ModuPlyAuthenticationEntryPoint(objectMapper());
+    JwtAuthenticationFilter filter =
+        new JwtAuthenticationFilter(jwtTokenProvider, authService, entryPoint, redisUtil);
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    MockFilterChain filterChain = new MockFilterChain();
+
+    // When
+    filter.doFilter(request, response, filterChain);
+
+    // Then
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    assertThat(response.getStatus()).isEqualTo(200);
+
+    verify(jwtTokenProvider, never()).validateAccessToken(any());
+    verify(authService, never()).getAuthentication(any());
+  }
+
+  @Test
+  @DisplayName("유효하지 않은 Access Token이면 401 응답을 반환하고 SecurityContext를 비운다")
+  void do_filter_fail_when_access_token_is_invalid() throws Exception {
+    // Given
+    String token = "invalid-token";
+    ModuPlyAuthenticationEntryPoint entryPoint =
+        new ModuPlyAuthenticationEntryPoint(objectMapper());
+    JwtAuthenticationFilter filter =
+        new JwtAuthenticationFilter(jwtTokenProvider, authService, entryPoint, redisUtil);
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    MockFilterChain filterChain = new MockFilterChain();
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(false);
+
+    // When
+    filter.doFilter(request, response, filterChain);
+
+    // Then
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    assertThat(response.getStatus()).isEqualTo(401);
+    assertThat(response.getContentAsString()).contains("auth06");
+
+    verify(jwtTokenProvider).validateAccessToken(token);
+    verify(jwtTokenProvider, never()).getUserId(token);
+    verify(authService, never()).getAuthentication(any());
+  }
+
+  @Test
+  @DisplayName("블랙리스트에 등록된 Access Token이면 401 응답을 반환한다")
+  void do_filter_fail_when_access_token_is_blacklisted() throws Exception {
+    // Given
+    String token = "blacklisted-token";
+    ModuPlyAuthenticationEntryPoint entryPoint =
+        new ModuPlyAuthenticationEntryPoint(objectMapper());
+    JwtAuthenticationFilter filter =
+        new JwtAuthenticationFilter(jwtTokenProvider, authService, entryPoint, redisUtil);
+
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    MockFilterChain filterChain = new MockFilterChain();
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(authService.isAccessTokenBlacklisted(token)).willReturn(true);
+
+    // When
+    filter.doFilter(request, response, filterChain);
+
+    // Then
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    assertThat(response.getStatus()).isEqualTo(401);
+    assertThat(response.getContentAsString()).contains("auth17");
+
+    verify(jwtTokenProvider).validateAccessToken(token);
+    verify(authService).isAccessTokenBlacklisted(token);
+    verify(jwtTokenProvider, never()).getUserId(token);
+    verify(authService, never()).getAuthentication(any());
+  }
+
+  private ObjectMapper objectMapper() {
+    return new ObjectMapper().findAndRegisterModules();
+  }
+}

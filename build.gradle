@@ -6,9 +6,9 @@ plugins {
     id 'jacoco'
 }
 
-group = 'com.team6.moduply'
+group = 'com.gachi'
 version = '0.0.1-SNAPSHOT'
-description = 'sb10-moduply-team6'
+description = 'gachi'
 
 java {
     toolchain {

@@ -1,0 +1,244 @@
+package com.gachi.common.websocket;
+
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+import com.gachi.auth.JwtTokenProvider;
+import com.gachi.auth.service.AuthService;
+import com.gachi.common.websocket.events.StompSubscribeEvent;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentMatchers;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageDeliveryException;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+
+@ExtendWith(MockitoExtension.class)
+class StompChannelInterceptorTest {
+
+  @InjectMocks
+  private StompChannelInterceptor stompChannelInterceptor;
+
+  @Mock
+  private ApplicationEventPublisher applicationEventPublisher;
+
+  @Mock
+  private JwtTokenProvider jwtTokenProvider;
+
+  @Mock
+  private AuthService authService;
+
+  @BeforeEach
+  void setUp() {
+    org.mockito.Mockito.lenient()
+        .when(authService.isTokenVersionValid(
+            ArgumentMatchers.anyString(),
+            ArgumentMatchers.anyLong()
+        ))
+        .thenReturn(true);
+    org.mockito.Mockito.lenient()
+        .when(authService.isSessionActive(ArgumentMatchers.anyString()))
+        .thenReturn(true);
+  }
+
+  @Test
+  @DisplayName("SUBSCRIBE 요청을 받으면 구독 이벤트를 발행하고 세션에 구독 정보를 저장한다.")
+  void preSend_success_when_subscribe() {
+    UUID userId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    String destination = "/sub/conversations/" + conversationId + "/direct-messages";
+    Map<String, Object> sessionAttributes = new ConcurrentHashMap<>(Map.of("userId", userId));
+    Message<?> message = subscribeMessage(destination, sessionAttributes);
+
+    assertThatCode(() -> stompChannelInterceptor.preSend(message, null))
+        .doesNotThrowAnyException();
+
+    verify(applicationEventPublisher).publishEvent(
+        ArgumentMatchers.any(StompSubscribeEvent.class)
+    );
+    Map<String, String> subscriptions = (Map<String, String>) sessionAttributes.get("SUBSCRIPTIONS");
+    assertThat(subscriptions).containsEntry("sub-1", destination);
+  }
+
+  @Test
+  @DisplayName("구독 이벤트 처리 중 예외가 발생하면 구독 정보를 저장하지 않는다.")
+  void preSend_fail_when_subscribe_event_listener_throws_exception() {
+    UUID userId = UUID.randomUUID();
+    UUID conversationId = UUID.randomUUID();
+    String destination = "/sub/conversations/" + conversationId + "/direct-messages";
+    Map<String, Object> sessionAttributes = new ConcurrentHashMap<>(Map.of("userId", userId));
+    Message<?> message = subscribeMessage(destination, sessionAttributes);
+
+    willThrow(new MessageDeliveryException("대화방 참여자만 DM을 구독할 수 있습니다."))
+        .given(applicationEventPublisher)
+        .publishEvent(ArgumentMatchers.any(StompSubscribeEvent.class));
+    assertThatThrownBy(() -> stompChannelInterceptor.preSend(message, null))
+        .isInstanceOf(MessageDeliveryException.class)
+        .hasMessageContaining("대화방 참여자만 DM을 구독할 수 있습니다.");
+
+    Map<String, String> subscriptions = (Map<String, String>) sessionAttributes.get("SUBSCRIPTIONS");
+    assertThat(subscriptions).doesNotContainKey("sub-1");
+  }
+
+  @Test
+  @DisplayName("인증 사용자 정보가 없으면 구독 이벤트를 발행하지 않는다.")
+  void preSend_fail_without_user_id() {
+    Map<String, Object> sessionAttributes = new ConcurrentHashMap<>();
+    Message<?> message = subscribeMessage("/sub/watching-sessions/session-1", sessionAttributes);
+
+    assertThatThrownBy(() -> stompChannelInterceptor.preSend(message, null))
+        .isInstanceOf(MessageDeliveryException.class)
+        .hasMessageContaining("웹소켓 세션에 사용자 인증 정보가 존재하지 않습니다.");
+
+    verify(applicationEventPublisher, never()).publishEvent(
+        ArgumentMatchers.any(StompSubscribeEvent.class)
+    );
+  }
+
+  @Test
+  @DisplayName("블랙리스트에 등록된 Access Token으로 CONNECT 요청 시 인증에 실패한다.")
+  void preSend_fail_when_connect_with_blacklisted_access_token() {
+    String token = "blacklisted-token";
+    Message<?> message = connectMessage(token, new ConcurrentHashMap<>());
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(authService.isAccessTokenBlacklisted(token)).willReturn(true);
+
+    assertThatThrownBy(() -> stompChannelInterceptor.preSend(message, null))
+        .isInstanceOf(BadCredentialsException.class)
+        .hasMessageContaining("엑세스 토큰이 유효하지 않습니다.");
+
+    verify(jwtTokenProvider).validateAccessToken(token);
+    verify(authService).isAccessTokenBlacklisted(token);
+    verify(authService, never()).getAuthentication(ArgumentMatchers.any());
+  }
+
+  @Test
+  @DisplayName("현재 버전과 다른 Access Token으로 CONNECT 요청 시 인증에 실패한다.")
+  void preSend_fail_when_connect_with_mismatched_token_version() {
+    String token = "old-token";
+    String email = "tester@example.com";
+    Message<?> message = connectMessage(token, new ConcurrentHashMap<>());
+
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(jwtTokenProvider.getUserId(token)).willReturn(UUID.randomUUID());
+    given(jwtTokenProvider.getEmail(token)).willReturn(email);
+    given(jwtTokenProvider.getTokenVersion(token)).willReturn(0L);
+    given(jwtTokenProvider.getSessionId(token)).willReturn(UUID.randomUUID().toString());
+    given(authService.isTokenVersionValid(email, 0L)).willReturn(false);
+
+    assertThatThrownBy(() -> stompChannelInterceptor.preSend(message, null))
+        .isInstanceOf(BadCredentialsException.class);
+
+    verify(authService).isTokenVersionValid(email, 0L);
+    verify(authService, never()).getAuthentication(ArgumentMatchers.any());
+  }
+
+  @Test
+  @DisplayName("로그아웃된 Access Token의 후속 SEND 프레임은 차단한다.")
+  void preSend_fail_when_send_with_blacklisted_access_token() {
+    // Given
+    String token = "logged-out-token";
+    Map<String, Object> sessionAttributes = authenticatedSessionAttributes(token);
+    Message<?> message = authenticatedMessage(StompCommand.SEND, sessionAttributes);
+    given(authService.isAccessTokenBlacklisted(token)).willReturn(true);
+
+    // When & Then
+    assertThatThrownBy(() -> stompChannelInterceptor.preSend(message, null))
+        .isInstanceOf(BadCredentialsException.class)
+        .hasMessageContaining("로그아웃된 Access Token");
+
+    verify(authService).isTokenVersionValid("tester@example.com", 0L);
+    verify(authService).isAccessTokenBlacklisted(token);
+  }
+
+  @Test
+  @DisplayName("CONNECT 성공 시 후속 프레임 검증을 위해 Access Token을 세션에 저장한다.")
+  void preSend_stores_access_token_when_connect_succeeds() {
+    // Given
+    UUID userId = UUID.randomUUID();
+    String email = "tester@example.com";
+    String token = "valid-token";
+    Map<String, Object> sessionAttributes = new ConcurrentHashMap<>();
+    Message<?> message = connectMessage(token, sessionAttributes);
+    given(jwtTokenProvider.validateAccessToken(token)).willReturn(true);
+    given(jwtTokenProvider.getUserId(token)).willReturn(userId);
+    given(jwtTokenProvider.getEmail(token)).willReturn(email);
+    given(jwtTokenProvider.getTokenVersion(token)).willReturn(0L);
+    String authSessionId = UUID.randomUUID().toString();
+    given(jwtTokenProvider.getSessionId(token)).willReturn(authSessionId);
+    given(authService.getAuthentication(userId))
+        .willReturn(new TestingAuthenticationToken("user", null));
+
+    // When
+    stompChannelInterceptor.preSend(message, null);
+
+    // Then
+    assertThat(sessionAttributes)
+        .containsEntry("userId", userId)
+        .containsEntry("email", email)
+        .containsEntry("tokenVersion", 0L)
+        .containsEntry("accessToken", token)
+        .containsEntry("authSessionId", authSessionId);
+  }
+
+  private Message<?> subscribeMessage(String destination, Map<String, Object> sessionAttributes) {
+    sessionAttributes.putAll(authenticatedSessionAttributes("access-token"));
+    StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+    accessor.setDestination(destination);
+    accessor.setSubscriptionId("sub-1");
+    accessor.setSessionId("session-1");
+    accessor.setSessionAttributes(sessionAttributes);
+    accessor.setUser(new TestingAuthenticationToken("user", null));
+
+    return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+  }
+
+  private Message<?> authenticatedMessage(
+      StompCommand command,
+      Map<String, Object> sessionAttributes
+  ) {
+    StompHeaderAccessor accessor = StompHeaderAccessor.create(command);
+    accessor.setSessionId("session-1");
+    accessor.setSessionAttributes(sessionAttributes);
+    accessor.setUser(new TestingAuthenticationToken("user", null));
+    return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+  }
+
+  private Map<String, Object> authenticatedSessionAttributes(String accessToken) {
+    return new ConcurrentHashMap<>(Map.of(
+        "email", "tester@example.com",
+        "tokenVersion", 0L,
+        "accessToken", accessToken,
+        "authSessionId", UUID.randomUUID().toString()
+    ));
+  }
+
+  private Message<?> connectMessage(String token, Map<String, Object> sessionAttributes) {
+    StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.CONNECT);
+    accessor.setSessionId("session-1");
+    accessor.setSessionAttributes(sessionAttributes);
+    accessor.setNativeHeader("Authorization", "Bearer " + token);
+    accessor.setLeaveMutable(true);
+
+    return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+  }
+}

@@ -1,0 +1,231 @@
+package com.gachi.common.websocket;
+
+import com.gachi.auth.JwtTokenProvider;
+import com.gachi.auth.service.AuthService;
+import com.gachi.common.websocket.events.StompSubscribeEvent;
+import com.gachi.common.websocket.events.StompUnSubscribeEvent;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.http.HttpHeaders;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.MessageDeliveryException;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.ChannelInterceptor;
+import org.springframework.messaging.support.MessageHeaderAccessor;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.stereotype.Component;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class StompChannelInterceptor implements ChannelInterceptor {
+
+  private final ApplicationEventPublisher applicationEventPublisher;
+  private static final String SUBSCRIPTIONS_KEY = "SUBSCRIPTIONS";
+  private static final String USER_ID_KEY = "userId";
+  private static final String EMAIL_KEY = "email";
+  private static final String TOKEN_VERSION_KEY = "tokenVersion";
+  private static final String ACCESS_TOKEN_KEY = "accessToken";
+  private static final String AUTH_SESSION_ID_KEY = "authSessionId";
+
+  //JWT 인증
+  private final JwtTokenProvider jwtTokenProvider;
+  private final AuthService authService;
+
+  @Override
+  public Message<?> preSend(Message<?> message, MessageChannel channel) {
+    StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message,
+        StompHeaderAccessor.class);
+    StompCommand command = accessor.getCommand();
+    Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+
+    if (command == null) {
+      return message;
+    }
+
+    switch (command) {
+      case CONNECT:
+        String token = resolveToken(accessor)
+            .orElseThrow(() -> new BadCredentialsException("유효하지 않는 토큰"));
+        setAuthentication(accessor, sessionAttributes, token);
+        break;
+
+      case SUBSCRIBE:
+        validateAuthentication(accessor);
+        handleSubscribe(accessor, sessionAttributes);
+        break;
+      case UNSUBSCRIBE:
+        validateAuthentication(accessor);
+        handleUnSubscribe(accessor, sessionAttributes);
+        break;
+      case DISCONNECT:
+        break;
+      default:
+        validateAuthentication(accessor);
+    }
+
+    return message;
+  }
+
+  private void validateAuthentication(StompHeaderAccessor accessor) {
+    if (accessor.getUser() == null) {
+      throw new MessageDeliveryException("인증되지 않은 웹소켓 사용자입니다.");
+    }
+
+    Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+    if (sessionAttributes == null) {
+      throw new MessageDeliveryException("웹소켓 세션에 사용자 인증 정보가 존재하지 않습니다.");
+    }
+
+    Object email = sessionAttributes.get(EMAIL_KEY);
+    Object tokenVersion = sessionAttributes.get(TOKEN_VERSION_KEY);
+    Object accessToken = sessionAttributes.get(ACCESS_TOKEN_KEY);
+    Object authSessionId = sessionAttributes.get(AUTH_SESSION_ID_KEY);
+    if (!(email instanceof String) || !(tokenVersion instanceof Long)) {
+      throw new MessageDeliveryException("웹소켓 세션에 토큰 버전 정보가 존재하지 않습니다.");
+    }
+    if (!(accessToken instanceof String token) || token.isBlank()) {
+      throw new MessageDeliveryException("웹소켓 세션에 Access Token 정보가 존재하지 않습니다.");
+    }
+    if (!(authSessionId instanceof String sessionId) || sessionId.isBlank()) {
+      throw new MessageDeliveryException("웹소켓 세션에 로그인 세션 정보가 존재하지 않습니다.");
+    }
+
+    // 연결 후의 SEND/SUBSCRIBE 요청도 최신 토큰 버전인지 확인한다.
+    if (!authService.isTokenVersionValid((String) email, (Long) tokenVersion)) {
+      throw new BadCredentialsException("토큰 버전이 유효하지 않습니다.");
+    }
+    // 같은 브라우저 재로그인 등으로 폐기된 로그인 세션의 후속 프레임을 차단한다.
+    // WebSocket은 CONNECT 이후 같은 연결을 계속 쓰므로 HTTP 필터처럼 요청마다 JWT를 다시 받지 않는다.
+    // 따라서 CONNECT 때 저장한 authSessionId를 후속 프레임에서도 Redis로 재검증한다.
+    if (!authService.isSessionActive(sessionId)) {
+      throw new BadCredentialsException("로그인 세션이 유효하지 않습니다.");
+    }
+    // 로그아웃 이후 이미 연결된 세션에서 보내는 후속 프레임도 차단한다.
+    if (authService.isAccessTokenBlacklisted(token)) {
+      throw new BadCredentialsException("로그아웃된 Access Token입니다.");
+    }
+  }
+
+  /// STOMP SUBSCRIBE 요청이 들어왔을때 처리하는 메서드.
+  private void handleSubscribe(StompHeaderAccessor accessor,
+      Map<String, Object> sessionAttributes) {
+    // 세션 정보가 없으면 return
+    // sessionAttributes에는 로그인할 때 저장해둔 값 ex) userId가 들어있어야한다.
+    if (sessionAttributes == null) {
+      return;
+    }
+    // WebSocket 세션이 구독중인 목록을 저장할 Map을 꺼낸다.
+    // 없으면 새로 만든다.
+    // ex) SUBSCRIPTIONS = { "sub-1": "/sub/conversations/11111111-1111-1111-1111-111111111111/direct-messages" }
+    Map<String, String> subscriptionMap = (Map<String, String>) sessionAttributes.computeIfAbsent(
+        SUBSCRIPTIONS_KEY,
+        key -> new ConcurrentHashMap<>());
+
+    String subscriptionId = accessor.getSubscriptionId();
+    // ex) destination: /sub/conversations/{conversationId}/direct-messages
+    String destination = accessor.getDestination();
+
+    if (subscriptionId != null && destination != null) {
+      UUID userId = (UUID) sessionAttributes.get(USER_ID_KEY);
+
+      if (userId == null) {
+        throw new MessageDeliveryException("웹소켓 세션에 사용자 인증 정보가 존재하지 않습니다.");
+      }
+
+      applicationEventPublisher.publishEvent(new StompSubscribeEvent(
+              accessor.getSessionId(),
+              userId,
+              destination
+      ));
+
+      subscriptionMap.put(subscriptionId, destination);
+    }
+  }
+
+  private void handleUnSubscribe(StompHeaderAccessor accessor,
+      Map<String, Object> sessionAttributes) {
+
+    if (sessionAttributes == null) {
+      return;
+    }
+
+    Map<String, String> subscriptionMap = (Map<String, String>) sessionAttributes.get(
+        SUBSCRIPTIONS_KEY);
+
+    if (subscriptionMap == null || accessor.getSubscriptionId() == null) {
+      return;
+    }
+
+    String destination = subscriptionMap.remove(accessor.getSubscriptionId());
+    if (destination == null) {
+      return;
+    }
+
+    applicationEventPublisher.publishEvent(
+        new StompUnSubscribeEvent(accessor.getSessionId(), destination));
+    if (subscriptionMap.isEmpty()) {
+      sessionAttributes.remove(SUBSCRIPTIONS_KEY);
+    }
+  }
+
+  private Optional<String> resolveToken(StompHeaderAccessor accessor) {
+    String prefix = "Bearer ";
+    return Optional.ofNullable(accessor.getFirstNativeHeader(HttpHeaders.AUTHORIZATION))
+        .map(value -> {
+          if (value.startsWith(prefix)) {
+            return value.substring(prefix.length());
+          } else {
+            return null;
+          }
+        });
+  }
+
+  private void setAuthentication(StompHeaderAccessor accessor,
+      Map<String, Object> sessionAttributes, String token) {
+    try {
+      // 엑세스 토큰 검증 실패
+      if (!jwtTokenProvider.validateAccessToken(token)) {
+        throw new BadCredentialsException("엑세스 토큰이 유효하지 않습니다.");
+      }
+      // 엑세스 토큰 블랙리스트에 존재
+      if (authService.isAccessTokenBlacklisted(token)) {
+        throw new BadCredentialsException("로그아웃된 엑세스 토큰입니다.");
+      }
+      UUID userId = jwtTokenProvider.getUserId(token);
+      String email = jwtTokenProvider.getEmail(token);
+      long tokenVersion = jwtTokenProvider.getTokenVersion(token);
+      String authSessionId = jwtTokenProvider.getSessionId(token);
+      // 버전이 달라 무효화된 토큰으로 WebSocket 연결을 생성하지 못하게 한다.
+      if(!authService.isTokenVersionValid(email,tokenVersion)){
+        throw new BadCredentialsException("토큰 버전이 유효하지 않습니다.");
+      }
+      if (!authService.isSessionActive(authSessionId)) {
+        throw new BadCredentialsException("로그인 세션이 유효하지 않습니다.");
+      }
+      Authentication authentication = authService.getAuthentication(userId);
+      accessor.setUser(authentication);
+      if (sessionAttributes != null) {
+        sessionAttributes.put(USER_ID_KEY, userId);
+        sessionAttributes.put(EMAIL_KEY, email);
+        sessionAttributes.put(TOKEN_VERSION_KEY, tokenVersion);
+        sessionAttributes.put(ACCESS_TOKEN_KEY, token);
+        // 후속 SEND/SUBSCRIBE/UNSUBSCRIBE 프레임에서 세션 폐기 여부를 다시 확인하기 위해 저장한다.
+        sessionAttributes.put(AUTH_SESSION_ID_KEY, authSessionId);
+      }
+    } catch (AuthenticationException e) {
+      throw new BadCredentialsException("엑세스 토큰이 유효하지 않습니다.", e);
+    } catch (Exception e) {
+      throw new MessageDeliveryException("웹소켓 연결 인증에 실패하였습니다.");
+    }
+  }
+}

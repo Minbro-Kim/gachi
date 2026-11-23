@@ -1,0 +1,13 @@
+package com.gachi.notification.event;
+
+import java.util.UUID;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+
+@Getter
+@RequiredArgsConstructor
+public class ContentAddedEvent {
+  private final UUID playlistId;
+  private final String playlistTitle;
+  private final String contentTitle;
+}

@@ -1,0 +1,118 @@
+package com.gachi.auth.handler;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gachi.auth.JwtTokenProvider;
+import com.gachi.auth.handler.login.JwtLoginSuccessHandler;
+import com.gachi.auth.session.BrowserIdResolver;
+import com.gachi.auth.service.AuthService;
+import com.gachi.auth.userdetails.ModuPlyUserDetails;
+import com.gachi.common.enums.RedisKeyPolicy;
+import com.gachi.common.util.RedisUtil;
+import com.gachi.user.dto.UserDto;
+import com.gachi.user.enums.Role;
+import jakarta.servlet.http.Cookie;
+import java.time.Instant;
+import java.util.UUID;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+
+@ExtendWith(MockitoExtension.class)
+class JwtLoginSuccessHandlerTest {
+  @Mock
+  private JwtTokenProvider jwtTokenProvider;
+
+  @Mock
+  private RedisUtil redisUtil;
+
+  @Mock
+  private AuthService authService;
+
+  @Mock
+  private BrowserIdResolver browserIdResolver;
+
+  @Test
+  @DisplayName("로그인 성공 시 Access Token은 헤더와 응답 바디에, Refresh Token은 쿠키에 담는다")
+  void login_success() throws Exception {
+    // Given
+    ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    JwtLoginSuccessHandler handler = new JwtLoginSuccessHandler(
+        jwtTokenProvider,
+        objectMapper,
+        CookieCsrfTokenRepository.withHttpOnlyFalse(),
+        redisUtil,
+        authService,
+        browserIdResolver
+    );
+
+    UserDto userDto = new UserDto(
+        UUID.randomUUID(),
+        Instant.now(),
+        "tester@example.com",
+        "tester",
+        null,
+        Role.USER,
+        false
+    );
+    ModuPlyUserDetails userDetails = new ModuPlyUserDetails(userDto, "encoded-password");
+    Authentication authentication = new UsernamePasswordAuthenticationToken(
+        userDetails,
+        null,
+        userDetails.getAuthorities()
+    );
+
+    String versionKey = RedisKeyPolicy.USER_TOKEN_VERSION.generateKey(userDto.getEmail());
+    String browserId = UUID.randomUUID().toString();
+    String sessionId = UUID.randomUUID().toString();
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    given(redisUtil.getData(versionKey)).willReturn("0");
+    given(browserIdResolver.resolveOrCreate(request, response)).willReturn(browserId);
+    given(authService.createSession(userDto.getId(), browserId)).willReturn(sessionId);
+    given(jwtTokenProvider.generateAccessToken(authentication, 0L, sessionId))
+        .willReturn("access-token");
+    given(jwtTokenProvider.generateRefreshToken(authentication, sessionId)).willReturn("refresh-token");
+
+    // When
+    handler.onAuthenticationSuccess(request, response, authentication);
+
+    // Then
+    Cookie refreshTokenCookie = response.getCookie("REFRESH_TOKEN");
+    Cookie csrfTokenCookie = response.getCookie("XSRF-TOKEN");
+    JsonNode responseBody = objectMapper.readTree(response.getContentAsString());
+
+    assertThat(response.getStatus()).isEqualTo(200);
+    assertThat(response.getHeader(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer access-token");
+    assertThat(refreshTokenCookie).isNotNull();
+    assertThat(refreshTokenCookie.getValue()).isEqualTo("refresh-token");
+    assertThat(refreshTokenCookie.isHttpOnly()).isTrue();
+    assertThat(refreshTokenCookie.getSecure()).isTrue();
+    assertThat(refreshTokenCookie.getPath()).isEqualTo("/");
+    assertThat(refreshTokenCookie.getAttribute("SameSite")).isEqualTo("Lax");
+    assertThat(csrfTokenCookie).isNotNull();
+    assertThat(csrfTokenCookie.isHttpOnly()).isFalse();
+    assertThat(csrfTokenCookie.getPath()).isEqualTo("/");
+    assertThat(responseBody.get("accessToken").asText()).isEqualTo("access-token");
+    assertThat(responseBody.get("userDto").get("email").asText()).isEqualTo("tester@example.com");
+    verify(redisUtil).setDataExpire(
+        RedisKeyPolicy.REFRESH_TOKEN.generateKey(sessionId),
+        "refresh-token",
+        RedisKeyPolicy.REFRESH_TOKEN.getTtl()
+    );
+    verify(redisUtil).setDataIfAbsent(versionKey, "0");
+  }
+}

@@ -37,7 +37,7 @@ cors:
     - "http://localhost:[*]"
     - "http://127.0.0.1:[*]"
 
-moduply:
+gachi:
   storage:
     type: ${BINARY_CONTENT_STORAGE_TYPE:local}
 
@@ -51,4 +51,4 @@ management:
       enabled: true
   metrics:
     tags:
-      application: moduply
+      application: gachi

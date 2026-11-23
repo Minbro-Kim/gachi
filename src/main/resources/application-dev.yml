@@ -1,8 +1,8 @@
 spring:
   datasource:
     url: jdbc:postgresql://localhost:5432/moduply
-    username: moduply
-    password: moduply123
+    username: gachi
+    password: gachi123
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:

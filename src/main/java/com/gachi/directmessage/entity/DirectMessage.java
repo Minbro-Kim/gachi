@@ -1,0 +1,64 @@
+package com.gachi.directmessage.entity;
+
+import com.gachi.common.baseentity.BaseUpdatableEntity;
+import com.gachi.conversation.entity.Conversation;
+import com.gachi.user.entity.User;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+import lombok.Getter;
+
+@Entity
+@Getter
+@Table(
+    name = "direct_messages",
+    indexes = {
+        @Index(
+            name = "idx_direct_messages_conversation_created_at_id",
+            columnList = "conversation_id, created_at, id"
+        ),
+        @Index(
+            name = "idx_direct_messages_unread_conversation_sender",
+            columnList = "conversation_id, is_read, sender_id, created_at, id"
+        )
+    }
+)
+public class DirectMessage extends BaseUpdatableEntity {
+
+  /// Conversation : DM = 1 : N
+  @ManyToOne(fetch = FetchType.LAZY, optional = false)
+  @JoinColumn(name = "conversation_id", nullable = false)
+  private Conversation conversation;
+
+  /// User : DM = 1 : N
+  @ManyToOne(fetch = FetchType.LAZY, optional = false)
+  @JoinColumn(name = "sender_id", nullable = false)
+  private User sender;
+
+  @Column(columnDefinition = "TEXT")
+  private String content;
+
+  @Column(name = "is_read", nullable = false)
+  private boolean read = false;
+
+  protected DirectMessage() {
+  }
+
+  private DirectMessage(Conversation conversation, User sender, String content) {
+    this.conversation = conversation;
+    this.sender = sender;
+    this.content = content;
+  }
+
+  public static DirectMessage create(Conversation conversation, User sender, String content) {
+    return new DirectMessage(conversation, sender, content);
+  }
+
+  public void markAsRead() {
+    this.read = true;
+  }
+}

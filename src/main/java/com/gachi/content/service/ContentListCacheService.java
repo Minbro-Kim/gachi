@@ -1,0 +1,111 @@
+package com.gachi.content.service;
+
+import com.gachi.common.config.CacheConfig;
+import com.gachi.common.pagination.SortDirection;
+import com.gachi.content.dto.ContentListCacheItemDto;
+import com.gachi.content.dto.ContentListCachePageDto;
+import com.gachi.content.entity.Content;
+import com.gachi.content.enums.ContentSortBy;
+import com.gachi.content.enums.ContentType;
+import com.gachi.content.repository.ContentRepository;
+import com.gachi.content.repository.ContentTagRepository;
+import com.gachi.content.repository.ContentTagRepository.ContentTagNameProjection;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+public class ContentListCacheService {
+
+  private final ContentRepository contentRepository;
+  private final ContentTagRepository contentTagRepository;
+
+  /// 캐시 키는 type, keyword, tags...를 모두 포함한다.
+  @Cacheable(
+      cacheNames = CacheConfig.CONTENT_LIST,
+      key = "{#typeEqual, #keywordLike, #tagsIn, #cursor, #idAfter, #limit, #sortBy, #sortDirection}",
+      sync = true
+  )
+  @Transactional(readOnly = true)
+  public ContentListCachePageDto findCreatedAtPage(
+      ContentType typeEqual,
+      String keywordLike,
+      List<String> tagsIn,
+      String cursor,
+      UUID idAfter,
+      int limit,
+      ContentSortBy sortBy,
+      SortDirection sortDirection
+  ) {
+    /// 캐시가 없는 경우 콘텐츠 목록 조회
+    List<Content> contents = contentRepository.findAllByCursor(
+        typeEqual,
+        keywordLike,
+        tagsIn,
+        cursor,
+        idAfter,
+        limit + 1,
+        sortBy,
+        sortDirection
+    );
+    boolean hasNext = contents.size() > limit;
+    List<Content> pageContents = hasNext ? contents.subList(0, limit) : contents;
+    Map<UUID, List<String>> tagNamesByContentId = getTagNamesGroupedByContentId(pageContents);
+    List<ContentListCacheItemDto> data = pageContents.stream()
+        .map(content -> toCacheItem(
+            content,
+            tagNamesByContentId.getOrDefault(content.getId(), List.of())
+        ))
+        .toList();
+    Content lastContent = data.isEmpty() ? null : pageContents.get(pageContents.size() - 1);
+    boolean isFirstPage = cursor == null && idAfter == null;
+    long totalCount = isFirstPage && !hasNext
+        ? pageContents.size()
+        : contentRepository.countContents(typeEqual, keywordLike, tagsIn);
+    /// id, title, description등 잘 변하지 않는 데이터 저장
+    return new ContentListCachePageDto(
+        data,
+        hasNext ? lastContent.getCreatedAt().toString() : null,
+        hasNext ? lastContent.getId() : null,
+        hasNext,
+        totalCount,
+        sortBy.name(),
+        sortDirection
+    );
+  }
+
+  private ContentListCacheItemDto toCacheItem(Content content, List<String> tagNames) {
+    return new ContentListCacheItemDto(
+        content.getId(),
+        content.getType(),
+        content.getTitle(),
+        content.getDescription(),
+        ContentImageUrlResolver.resolve(content),
+        tagNames,
+        content.getAverageRating(),
+        content.getReviewCount()
+    );
+  }
+
+  private Map<UUID, List<String>> getTagNamesGroupedByContentId(List<Content> contents) {
+    List<UUID> contentIds = contents.stream()
+        .map(Content::getId)
+        .toList();
+
+    if (contentIds.isEmpty()) {
+      return Map.of();
+    }
+
+    return contentTagRepository.findTagNamesByContentIds(contentIds).stream()
+        .collect(Collectors.groupingBy(
+            ContentTagNameProjection::getContentId,
+            Collectors.mapping(ContentTagNameProjection::getTagName, Collectors.toList())
+        ));
+  }
+}
