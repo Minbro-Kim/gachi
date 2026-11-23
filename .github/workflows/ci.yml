@@ -5,27 +5,30 @@
 name: CI
 
 on:
-  pull_request:
-    branches:
-      - main
-      - dev
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.mdx'
-      - 'docs/**'
-      - '**/.env.example'
-      - '**/*.example'
-      - '.gitignore'
-  push:
-    branches:
-      - dev
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.mdx'
-      - 'docs/**'
-      - '**/.env.example'
-      - '**/*.example'
-      - '.gitignore'
+  workflow_dispatch:
+#
+#on:
+#  pull_request:
+#    branches:
+#      - main
+#      - dev
+#    paths-ignore:
+#      - '**/*.md'
+#      - '**/*.mdx'
+#      - 'docs/**'
+#      - '**/.env.example'
+#      - '**/*.example'
+#      - '.gitignore'
+#  push:
+#    branches:
+#      - dev
+#    paths-ignore:
+#      - '**/*.md'
+#      - '**/*.mdx'
+#      - 'docs/**'
+#      - '**/.env.example'
+#      - '**/*.example'
+#      - '.gitignore'
 
 jobs:
   test:
