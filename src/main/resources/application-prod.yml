@@ -22,5 +22,5 @@ jwt:
 
 logging:
   level:
-    com.team6.moduply: info
+    com.gachi: info
     org.hibernate.SQL: off
