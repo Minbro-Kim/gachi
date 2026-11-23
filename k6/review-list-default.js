@@ -7,7 +7,7 @@ import { koreanSummary } from './korean-html-report.js';
 const BASE_URL = __ENV.BASE_URL || 'http://host.docker.internal:8080';
 const PASSWORD = __ENV.TEST_USER_PASSWORD || 'k6-password';
 const USER_PREFIX = __ENV.USER_PREFIX || 'k6-review';
-const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@moduply.test';
+const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@gachi.test';
 const USER_COUNT = positiveNumber(__ENV.USER_COUNT, 1000);
 const SETUP_LOGIN_BATCH_SIZE = positiveNumber(__ENV.SETUP_LOGIN_BATCH_SIZE, 100);
 const SETUP_TIMEOUT = __ENV.SETUP_TIMEOUT || '10m';

@@ -107,7 +107,7 @@
     </root>
 
     <!-- 이 패키지의 로그는 일반 로그와 분리하여 배치 로그 파일에 기록합니다. -->
-    <logger name="com.team6.gachi.common.log" level="INFO" additivity="false">
+    <logger name="com.gachi.common.log" level="INFO" additivity="false">
       <appender-ref ref="BATCH_FILE"/>
       <appender-ref ref="ERROR_FILE"/>
     </logger>

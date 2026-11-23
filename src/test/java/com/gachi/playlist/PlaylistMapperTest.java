@@ -65,7 +65,7 @@ class PlaylistMapperTest {
   private ObjectMapper cacheObjectMapper() {
     BasicPolymorphicTypeValidator typeValidator =
         BasicPolymorphicTypeValidator.builder()
-            .allowIfSubType("com.team6.moduply.")
+            .allowIfSubType("com.gachi.")
             .allowIfSubType(ArrayList.class)
             .allowIfSubType(UUID.class)
             .allowIfSubType(LocalDateTime.class)

@@ -17,7 +17,7 @@
  * - 여러 사용자 Access Token을 순환 사용하여 특정 사용자 캐시/데이터에 부하가 몰리지 않게 한다.
  *
  * 데이터 전제:
- * - USER_PREFIX-000001@moduply.test 형식의 테스트 사용자가 존재해야 한다.
+ * - USER_PREFIX-000001@gachi.test 형식의 테스트 사용자가 존재해야 한다.
  * - 각 테스트 사용자는 충분한 1:1 대화방과 DM 데이터를 가지고 있어야 한다.
  *
  * Docker Compose 실행 예시:
@@ -38,7 +38,7 @@ import { koreanSummary } from './korean-html-report.js';
 const BASE_URL = __ENV.BASE_URL || 'http://host.docker.internal:8080';
 const PASSWORD = __ENV.TEST_USER_PASSWORD || 'k6-password';
 const USER_PREFIX = __ENV.USER_PREFIX || 'k6-conversation';
-const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@moduply.test';
+const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@gachi.test';
 const USER_COUNT = positiveNumber(__ENV.USER_COUNT, 10000);
 const SETUP_LOGIN_BATCH_SIZE = positiveNumber(__ENV.SETUP_LOGIN_BATCH_SIZE, 100);
 const SETUP_TIMEOUT = __ENV.SETUP_TIMEOUT || '10m';

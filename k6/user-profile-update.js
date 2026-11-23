@@ -9,7 +9,7 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const PASSWORD = __ENV.TEST_USER_PASSWORD || 'k6-password';
 const USER_COUNT = Number(__ENV.USER_COUNT || 1000);
 const SETUP_LOGIN_BATCH_SIZE = Math.max(1, Number(__ENV.SETUP_LOGIN_BATCH_SIZE || 100));
-const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@moduply.test';
+const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@gachi.test';
 const USER_PREFIX = __ENV.USER_PREFIX || 'k6-user';
 
 const START_RPS = Number(__ENV.START_RPS || 10);

@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @Profile("data-gen")
-@ConfigurationProperties(prefix = "moduply.test-data.user")
+@ConfigurationProperties(prefix = "gachi.test-data.user")
 public class UserTestDataProperties {
 
   private boolean enabled = false;

@@ -6,13 +6,13 @@ import org.springframework.stereotype.Component;
 
 @Component
 @Profile("data-gen")
-@ConfigurationProperties(prefix = "moduply.test-data.review")
+@ConfigurationProperties(prefix = "gachi.test-data.review")
 public class ReviewTestDataProperties {
 
   private boolean enabled = false;
   private int hotContentSize = 10;
   private int reviewsPerContent = 100000;
-  private String userEmailLike = "k6-review-%@moduply.test";
+  private String userEmailLike = "k6-review-%@gachi.test";
   private String contentExternalApiIdLike = "k6-seed-%";
   private int chunkSize = 1000;
   private boolean skipIfExists = true;

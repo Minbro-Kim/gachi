@@ -34,7 +34,7 @@ public class UserGenerator extends AbstractGenerator<User> {
   public static final String CONVERSATION_EMAIL_PREFIX = "k6-conversation-";
   public static final String PROFILE_UPDATE_EMAIL_PREFIX = "k6-user-";
   public static final String REVIEW_EMAIL_PREFIX = "k6-review-";
-  public static final String EMAIL_DOMAIN = "@moduply.test";
+  public static final String EMAIL_DOMAIN = "@gachi.test";
 
   private static final String INSERT_USER_SQL = """
       insert into users (

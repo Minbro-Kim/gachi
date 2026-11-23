@@ -28,7 +28,7 @@ class WebSocketLogoutDisconnectListenerTest {
   void call_success_when_logout_event_occurred() {
     // given
     UUID userId = UUID.randomUUID();
-    String email = "test@moduply.com";
+    String email = "test@gachi.com";
     UserLogoutEvent event = new UserLogoutEvent(userId, email);
 
     // 2. when
@@ -43,7 +43,7 @@ class WebSocketLogoutDisconnectListenerTest {
   void should_not_propagate_exception_when_service_fails() {
     // given
     UUID userId = UUID.randomUUID();
-    String email = "test@moduply.com";
+    String email = "test@gachi.com";
     UserLogoutEvent event = new UserLogoutEvent(userId, email);
     doThrow(new RuntimeException("send failed"))
         .when(websocketControlService).sendForceLogoutSignal(email);

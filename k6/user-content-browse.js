@@ -12,7 +12,7 @@ import { check, fail, group, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
 import { koreanSummary } from './korean-html-report.js';
 
-const BASE_URL = (__ENV.BASE_URL || 'https://moduply.co.kr').replace(/\/+$/, '');
+const BASE_URL = (__ENV.BASE_URL || 'https://gachi.co.kr').replace(/\/+$/, '');
 const EMAIL_TEMPLATE = __ENV.TEST_USER_EMAIL_TEMPLATE || '';
 const PASSWORD_TEMPLATE = __ENV.TEST_USER_PASSWORD_TEMPLATE || '';
 const USER_COUNT = positiveNumber(__ENV.USER_COUNT, 20);

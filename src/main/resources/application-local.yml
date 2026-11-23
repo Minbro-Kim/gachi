@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/moduply}
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/gachi}
     username: ${POSTGRES_USER_NAME:admin}
     password: ${POSTGRES_PASSWORD:0000}
     driver-class-name: org.postgresql.Driver
@@ -26,7 +26,7 @@ spring:
 
 logging:
   level:
-    com.team6.moduply: debug
+    com.gachi: debug
     org.hibernate.SQL: debug
     org.hibernate.orm.jdbc.bind: trace
     org.springframework.messaging.simp: DEBUG

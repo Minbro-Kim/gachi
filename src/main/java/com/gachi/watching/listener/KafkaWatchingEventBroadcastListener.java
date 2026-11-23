@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 @ConditionalOnProperty(
-    name = "moduply.async.event.type",
+    name = "gachi.async.event.type",
     havingValue = "kafka"
 )
 public class KafkaWatchingEventBroadcastListener {

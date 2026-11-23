@@ -9,7 +9,7 @@ const PASSWORD = __ENV.TEST_USER_PASSWORD || 'k6-password';
 const FOLLOWER_COUNT = Number(__ENV.FOLLOWER_COUNT || 1000);
 const FOLLOWEE_COUNT = Number(__ENV.FOLLOWEE_COUNT || 3000);
 const SETUP_LOGIN_BATCH_SIZE = Math.max(1, Number(__ENV.SETUP_LOGIN_BATCH_SIZE || 100));
-const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@moduply.test';
+const EMAIL_DOMAIN = __ENV.EMAIL_DOMAIN || '@gachi.test';
 const FOLLOWER_PREFIX = __ENV.FOLLOWER_PREFIX || 'k6-follower';
 const FOLLOWEE_PREFIX = __ENV.FOLLOWEE_PREFIX || 'k6-followee';
 

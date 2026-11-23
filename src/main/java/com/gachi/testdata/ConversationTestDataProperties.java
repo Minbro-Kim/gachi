@@ -6,12 +6,12 @@ import org.springframework.stereotype.Component;
 
 @Component
 @Profile("data-gen")
-@ConfigurationProperties(prefix = "moduply.test-data.conversation")
+@ConfigurationProperties(prefix = "gachi.test-data.conversation")
 public class ConversationTestDataProperties {
 
   private boolean enabled = false;
   private int userSize = 10000;
-  private String userEmailLike = "k6-conversation-%@moduply.test";
+  private String userEmailLike = "k6-conversation-%@gachi.test";
   private int conversationsPerUser = 100;
   private int messagesPerConversation = 10;
   private double unreadRatio = 0.3;
